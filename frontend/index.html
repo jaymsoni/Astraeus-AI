@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astraeus AI Assistant</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Astraeus AI Assistant</h1>
+            <p>Upload documents and ask questions about them</p>
+        </header>
+
+        <main>
+            <!-- File Upload Section -->
+            <section class="upload-section">
+                <h2>Upload Documents</h2>
+                <div class="upload-area" id="dropZone">
+                    <input type="file" id="fileInput" multiple accept=".txt,.pdf,.png,.jpg,.jpeg,.csv">
+                    <p>Drag & drop files here or click to select</p>
+                    <p class="file-types">Supported files: PDF, TXT, Images, CSV</p>
+                </div>
+                <div id="uploadStatus"></div>
+            </section>
+
+            <!-- Document List Section -->
+            <section class="documents-section">
+                <h2>Uploaded Documents</h2>
+                <div id="documentList">
+                    <!-- Documents will be listed here -->
+                </div>
+            </section>
+
+            <!-- Query Section -->
+            <section class="query-section">
+                <h2>Ask Questions</h2>
+                <div class="chat-interface">
+                    <div id="chatMessages" class="chat-messages">
+                        <!-- Chat messages will appear here -->
+                    </div>
+                    <div class="chat-input">
+                        <input type="text" id="queryInput" placeholder="Ask a question about your documents...">
+                        <button id="sendQuery">Send</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="js/main.js"></script>
+</body>
+</html>
