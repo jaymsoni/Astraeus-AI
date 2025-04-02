@@ -1,0 +1,5 @@
+for the backend : 
+(astraeus_env) vishwesh@jay-lenovo-ideapad-320-15ikb:~/Desktop/JAY/Cursor/astraeus$ python run.py
+
+for the frontend
+(astraeus_env) vishwesh@jay-lenovo-ideapad-320-15ikb:~/Desktop/JAY/Cursor/astraeus/frontend$     python -m http.server 8000
