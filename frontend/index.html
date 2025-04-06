@@ -4,19 +4,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Astraeus AI Assistant</title>
-    <link rel="stylesheet" href="css/style.css?v=1.3">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Add highlight.js for code syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <!-- Add markdown-it for markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it@13.0.1/dist/markdown-it.min.js"></script>
+    <!-- Add DOMPurify for safe HTML rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Astraeus AI Assistant</h1>
-            <p>Upload documents and ask questions about them</p>
+            <p>Your intelligent document assistant</p>
         </header>
 
         <main>
-            <!-- File Upload Section -->
+            <!-- Document Management Section -->
             <section class="upload-section">
-                <h2>Upload Documents</h2>
+                <h2>Document Management</h2>
                 <div class="upload-area" id="dropZone">
                     <input type="file" id="fileInput" multiple accept=".txt,.pdf,.png,.jpg,.jpeg,.csv">
                     <p>Drag & drop files here or click to select</p>
@@ -25,23 +33,32 @@
                 <div id="uploadStatus"></div>
             </section>
 
-            <!-- Document List Section -->
             <section class="documents-section">
-                <h2>Uploaded Documents</h2>
+                <h2>Your Documents</h2>
                 <div id="documentList">
                     <!-- Documents will be listed here -->
                 </div>
             </section>
 
-            <!-- Query Section -->
-            <section class="query-section">
-                <h2>Ask Questions</h2>
+            <!-- Chat Section -->
+            <section class="chat-section">
+                <h2>Chat with Astraeus</h2>
                 <div class="chat-interface">
                     <div id="chatMessages" class="chat-messages">
-                        <!-- Chat messages will appear here -->
+                        <!-- Welcome message -->
+                        <div class="message assistant">
+                            <div class="message-content">
+                                Hello! I'm Astraeus, your AI assistant. I can help you understand and work with your documents. Feel free to:
+                                • Ask questions about uploaded documents
+                                • Request summaries or analysis
+                                • Get help finding specific information
+                                
+                                How can I assist you today?
+                            </div>
+                        </div>
                     </div>
                     <div class="chat-input">
-                        <input type="text" id="queryInput" placeholder="Ask a question about your documents...">
+                        <input type="text" id="queryInput" placeholder="Type your message here...">
                         <button id="sendQuery">Send</button>
                     </div>
                 </div>
@@ -49,6 +66,6 @@
         </main>
     </div>
 
-    <script src="js/main.js?v=1.3"></script>
+    <script src="js/main.js"></script>
 </body>
 </html>

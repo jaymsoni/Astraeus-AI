@@ -5,6 +5,7 @@ import logging
 import json
 from werkzeug.utils import secure_filename
 import google.generativeai as genai
+import uuid
 
 # Import configuration
 from backend.config import (
@@ -16,6 +17,7 @@ from backend.config import (
 # Import agents and utils
 from backend.agents.data_intake import DataIntakeAgent
 from backend.utils.file_handlers import allowed_file, save_file
+from backend.utils.conversation import ConversationManager
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +44,9 @@ app.config['DEBUG'] = DEBUG
 
 # Initialize agents
 data_intake_agent = DataIntakeAgent()
+
+# Initialize conversation manager
+conversation_manager = ConversationManager()
 
 @app.route('/')
 def home():
@@ -136,7 +141,7 @@ def upload_file():
 def query_documents():
     """
     Search through processed documents and generate an answer using an LLM.
-    Expects a JSON body with 'query' and optional 'num_results', 'threshold'.
+    Expects a JSON body with 'query', optional 'conversation_id', and optional parameters.
     """
     data = request.get_json()
     if not data or 'query' not in data:
@@ -146,69 +151,180 @@ def query_documents():
         }), 400
     
     user_query = data['query']
-    k = data.get('num_results', 3) # Limit context slightly
+    conversation_id = data.get('conversation_id', str(uuid.uuid4()))
+    
+    # Extract search parameters with defaults
+    k = data.get('num_results', 3)
     threshold = data.get('threshold', 0.6)
+    rerank = data.get('rerank', True)
+    rerank_strategy = data.get('rerank_strategy', 'hybrid')
+    
+    # New parameters for hybrid search
+    use_hybrid = data.get('use_hybrid', True)
+    hybrid_ratio = data.get('hybrid_ratio', 0.7)
+    
+    # Parameter to control whether to send source documents to frontend
+    show_sources = data.get('show_sources', False)
     
     try:
-        # 1. Retrieve relevant documents
-        logger.info(f"Retrieving documents for query: '{user_query}'")
+        # Get conversation history
+        conversation_history = conversation_manager.get_conversation_history(conversation_id)
+        
+        # Add user's message to history
+        conversation_manager.add_message(conversation_id, "user", user_query)
+        
+        # 1. Retrieve relevant documents with enhanced search
+        logger.info(f"Retrieving documents for query: '{user_query}' with threshold {threshold}")
         search_results = data_intake_agent.search_documents(
             query=user_query,
             k=k,
-            threshold=threshold
+            threshold=threshold,
+            rerank=rerank,
+            rerank_strategy=rerank_strategy,
+            use_hybrid=use_hybrid,
+            hybrid_ratio=hybrid_ratio
         )
         
-        if not search_results:
-            logger.info("No relevant documents found above threshold.")
-            # Optionally, still try asking the LLM without context, or return directly
-            # For now, return specific message
-            return jsonify({
-                'status': 'success',
-                'message': 'No relevant documents found to answer the query.',
-                'results': [], # Keep results structure consistent
-                'answer': "I couldn't find any relevant information in your documents to answer that specific question."
-            })
+        # 2. Prepare context
+        context_parts = []
         
-        # 2. Augment: Prepare context for LLM
-        context = "\n\n---\n\n".join([f"Document: {res['id']}\nContent: {res['content']}" for res in search_results])
+        # Add conversation history if available
+        if conversation_history:
+            history_text = "\n".join([
+                f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
+                for msg in conversation_history
+            ])
+            context_parts.append(f"Previous conversation:\n{history_text}")
         
-        # Limit context length (simple approach, more sophisticated needed for production)
-        max_context_length = 8000 # Adjust based on model limits
+        # Add document context if available
+        if search_results:
+            # Format documents by origin/source
+            grouped_docs = {}
+            for res in search_results:
+                doc_id = res.get('id', '')
+                source = ''
+                
+                # Handle chunked documents
+                if 'parent_id' in res:
+                    parent_id = res['parent_id']
+                    if 'parent_title' in res:
+                        source = res['parent_title']
+                    else:
+                        source = parent_id
+                else:
+                    source = doc_id
+                
+                # Add snippet if available, otherwise full content
+                content = res.get('snippet', res.get('content', ''))
+                if source not in grouped_docs:
+                    grouped_docs[source] = []
+                
+                # Add score info and retrieval method
+                score_info = res.get('score', 0)
+                retrieval_method = res.get('retrieval_method', 'unknown')
+                scored_content = f"{content}\n[Relevance score: {score_info:.2f}, Method: {retrieval_method}]"
+                
+                grouped_docs[source].append(scored_content)
+            
+            # Format the document content
+            docs_text = ""
+            for source, contents in grouped_docs.items():
+                docs_text += f"Document: {source}\n"
+                for i, content in enumerate(contents, 1):
+                    if len(contents) > 1:
+                        docs_text += f"Excerpt {i}:\n{content}\n\n"
+                    else:
+                        docs_text += f"Content:\n{content}\n\n"
+            
+            context_parts.append(f"Relevant documents:\n{docs_text}")
+        
+        context = "\n\n---\n\n".join(context_parts)
+        
+        # Limit context length
+        max_context_length = 8000
         if len(context) > max_context_length:
             context = context[:max_context_length] + "... [context truncated]"
             
-        # 3. Generate: Create prompt and call LLM
-        prompt = f"""Based *only* on the following context from the documents provided, answer the user's question. If the context doesn't contain the answer, say so explicitly. Do not use any prior knowledge.
+        # 3. Create assistant-like prompt
+        prompt = f"""You are Astraeus, a helpful and knowledgeable AI assistant. You MUST format ALL responses using Markdown.
 
-Context:
-{context}
+REQUIRED FORMATTING RULES:
+1. Start with a clear heading using # or ##
+2. Use **bold** for important points and emphasis
+3. Use bullet points (*) or numbered lists (1.) for structured information
+4. Use `code` for technical terms, file names, and technical concepts
+5. Use > for quoting or referencing document content
+6. Break your response into sections using ## subheadings
+7. Use emojis at the start of sections for better readability
+8. Use proper spacing between sections for readability
 
-Question: {user_query}
+Example format:
+# Analysis Title 📊
+## Key Points 💡
+* **First point**: Description
+* **Second point**: Description
 
-Answer:"""
+## Details 📝
+> Relevant quote from document
+
+## Summary ✨
+Final thoughts and recommendations
+
+---
+
+Your responses should be:
+- Professional yet friendly
+- Clear and well-structured
+- Based on the provided context and documents
+- Honest about what you don't know
+
+IMPORTANT: When you cite or reference information from the documents, include a brief citation at the end of the relevant sentence or paragraph, like "[Source: Document Name]".
+
+{context if context else "Note: No relevant documents or conversation history found."}
+
+User's question: {user_query}
+
+Remember to use proper markdown formatting in your response:"""
         
-        logger.info(f"Generating LLM response using model: {LLM_MODEL}")
+        logger.info(f"Generating response using model: {LLM_MODEL}")
         
         if not GOOGLE_API_KEY:
              return jsonify({'status': 'error', 'message': 'LLM generation is disabled. GOOGLE_API_KEY not configured.'}), 500
 
         try:
-            # Use the specified LLM model from config
-            model = genai.GenerativeModel(LLM_MODEL) 
+            # Use the specified LLM model
+            model = genai.GenerativeModel(LLM_MODEL)
             response = model.generate_content(prompt)
             generated_answer = response.text
             logger.info("LLM response received.")
+            
+            # Add assistant's response to conversation history
+            conversation_manager.add_message(conversation_id, "assistant", generated_answer)
 
         except Exception as llm_error:
             logger.error(f"Error calling Gemini API: {llm_error}")
             return jsonify({'status': 'error', 'message': 'Failed to generate answer from LLM.'}), 500
             
-        # 4. Return combined results
-        return jsonify({
+        # 4. Return results, conditionally including search results
+        response_data = {
             'status': 'success',
-            'results': search_results, # Return the source documents too
-            'answer': generated_answer
-        })
+            'conversation_id': conversation_id,
+            'answer': generated_answer,
+            'source_count': len(search_results) if search_results else 0,
+            'search_params': {
+                'threshold': threshold,
+                'rerank': rerank,
+                'rerank_strategy': rerank_strategy,
+                'use_hybrid': use_hybrid,
+                'hybrid_ratio': hybrid_ratio
+            }
+        }
+        
+        # Only include search results if explicitly requested
+        if show_sources:
+            response_data['results'] = search_results
+            
+        return jsonify(response_data)
     
     except Exception as e:
         logger.error(f"Error in /query endpoint: {str(e)}")

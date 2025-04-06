@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import os
 import logging
 
@@ -11,9 +11,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DataIntakeAgent:
-    def __init__(self):
+    def __init__(self, use_chunks: bool = True, chunk_size: int = 500, chunk_overlap: int = 100):
+        """
+        Initialize the data intake agent.
+        
+        Args:
+            use_chunks: Whether to use document chunking
+            chunk_size: Size of document chunks
+            chunk_overlap: Overlap between document chunks
+        """
         self.documents = {}  # Store processed documents
-        self.embedding_manager = EmbeddingManager()
+        # Initialize embedding manager with chunking options
+        self.embedding_manager = EmbeddingManager(
+            use_chunks=use_chunks,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
         
         # Load existing embeddings if they exist
         if os.path.exists(VECTOR_STORE_PATH):
@@ -99,22 +112,109 @@ class DataIntakeAgent:
             for doc_id, doc_data in self.documents.items()
         ]
 
-    def search_documents(self, query: str, k: int = 4, threshold: float = 0.6) -> List[Dict[str, Any]]:
+    def search_documents(
+        self, 
+        query: str, 
+        k: int = 4, 
+        threshold: float = 0.6,
+        rerank: bool = True,
+        rerank_strategy: str = "hybrid",
+        use_hybrid: bool = True,
+        hybrid_ratio: float = 0.7
+    ) -> List[Dict[str, Any]]:
         """
         Search through processed documents using semantic similarity.
         
         Args:
             query: The search query string
-            k: Maximum number of results to return
+            k: Maximum number of results to return 
             threshold: Minimum similarity score required
+            rerank: Whether to apply re-ranking
+            rerank_strategy: The re-ranking strategy to use
+            use_hybrid: Whether to use hybrid search (combine semantic and BM25)
+            hybrid_ratio: Weight for semantic search vs BM25 (0-1)
             
         Returns:
             List of matching documents with relevance scores
         """
         logger.info(f"Searching for: '{query}' with threshold {threshold}")
-        results = self.embedding_manager.search(query, k, threshold=threshold)
-        logger.info(f"Found {len(results)} results for query: '{query}'")
-        return results
+        
+        results = self.embedding_manager.search(
+            query=query, 
+            k=k, 
+            threshold=threshold,
+            rerank=rerank,
+            rerank_strategy=rerank_strategy,
+            use_hybrid=use_hybrid,
+            hybrid_ratio=hybrid_ratio
+        )
+        
+        # Post-process results for better display
+        processed_results = []
+        for result in results:
+            # Deep copy to avoid modifying original
+            processed = result.copy()
+            
+            # Add snippet context around the query terms if available
+            if 'content' in processed:
+                processed['snippet'] = self._extract_relevant_snippet(
+                    processed['content'], 
+                    query, 
+                    max_length=300
+                )
+            
+            processed_results.append(processed)
+            
+        logger.info(f"Found {len(processed_results)} results for query: '{query}'")
+        return processed_results
+        
+    def _extract_relevant_snippet(self, content: str, query: str, max_length: int = 300) -> str:
+        """
+        Extract a relevant snippet from content based on the query.
+        
+        Args:
+            content: The full document content
+            query: The search query
+            max_length: Maximum length of the snippet
+            
+        Returns:
+            The most relevant text snippet
+        """
+        if not content or not query:
+            return ""
+            
+        # Convert to lowercase for case-insensitive matching
+        content_lower = content.lower()
+        query_lower = query.lower()
+        
+        # Remove stop words from query for better matching
+        stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'with'}
+        query_terms = [term for term in query_lower.split() if term not in stop_words and len(term) > 2]
+        
+        # Find the best starting position based on term matches
+        best_pos = 0
+        best_score = 0
+        
+        # Step through the content looking for matches
+        pos = 0
+        while pos < len(content_lower):
+            current_score = sum(1 for term in query_terms if term in content_lower[pos:pos+max_length])
+            if current_score > best_score:
+                best_score = current_score
+                best_pos = pos
+            pos += max_length // 4  # Smaller step size for better coverage
+            
+        # Extract the snippet
+        end_pos = min(best_pos + max_length, len(content))
+        snippet = content[best_pos:end_pos]
+        
+        # Add ellipsis if needed
+        if best_pos > 0:
+            snippet = "..." + snippet
+        if end_pos < len(content):
+            snippet = snippet + "..."
+            
+        return snippet
 
     def delete_document(self, doc_id: str) -> bool:
         """
