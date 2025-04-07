@@ -41,6 +41,11 @@ This file tracks planned features, improvements, and bug fixes.
     - ✅ ~~Add optional toggle for users to view source documents if needed~~
     - ✅ ~~Improve citation format when referencing documents~~
     - [ ] Add confidence indicators for LLM responses
+- [x] **Document Summarization:**
+    - ✅ ~~Implement document summary generation using Gemini API~~
+    - ✅ ~~Store summaries as document metadata~~
+    - ✅ ~~Add frontend UI to display document summaries~~
+    - ✅ ~~Allow users to toggle summary visibility~~
 
 ## Low Priority / Future Ideas
 
@@ -85,3 +90,9 @@ This file tracks planned features, improvements, and bug fixes.
    - Hybrid dense-sparse retrieval with configurable weights
    - Improved document metadata and tracking
    - Visual distinction of retrieval methods in UI 
+
+6. **Document Summarization**:
+   - Automatic document summary generation
+   - Gemini API integration for summary creation
+   - Summary display in document list
+   - Toggle UI for showing/hiding summaries 

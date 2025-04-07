@@ -15,10 +15,40 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
 </head>
 <body>
+    <!-- Document Management Panel -->
+    <div id="documentPanel" class="document-panel">
+        <div class="document-panel-header">
+            <h2>Document Management</h2>
+            <button id="closePanelBtn" class="close-panel-btn">&times;</button>
+        </div>
+        <div class="document-panel-content">
+            <div class="panel-section">
+                <h3>Your Documents</h3>
+                <div id="panelDocumentList" class="panel-document-list">
+                    <!-- Documents will be loaded here -->
+                </div>
+            </div>
+            <div class="panel-section">
+                <h3>Upload New Document</h3>
+                <div class="panel-upload-area">
+                    <label for="panelFileInput" class="panel-upload-label">
+                        <span class="icon">📤</span>
+                        <span>Select a file to upload</span>
+                    </label>
+                    <input type="file" id="panelFileInput" multiple accept=".txt,.pdf,.png,.jpg,.jpeg,.csv,.docx,.xlsx,.json,.xml,.yaml,.yml">
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1>Astraeus AI Assistant</h1>
             <p>Your intelligent document assistant</p>
+            <!-- Document Panel Toggle Button -->
+            <button id="documentPanelToggle" class="document-panel-toggle">
+                <span>📑 Manage Documents</span>
+            </button>
         </header>
 
         <main>
@@ -26,9 +56,9 @@
             <section class="upload-section">
                 <h2>Document Management</h2>
                 <div class="upload-area" id="dropZone">
-                    <input type="file" id="fileInput" multiple accept=".txt,.pdf,.png,.jpg,.jpeg,.csv">
+                    <input type="file" id="fileInput" multiple accept=".txt,.pdf,.png,.jpg,.jpeg,.csv,.docx,.xlsx,.json,.xml,.yaml,.yml">
                     <p>Drag & drop files here or click to select</p>
-                    <p class="file-types">Supported files: PDF, TXT, Images, CSV</p>
+                    <p class="file-types">Supported files: PDF, TXT, Images, CSV, DOCX, XLSX, JSON, XML, YAML</p>
                 </div>
                 <div id="uploadStatus"></div>
             </section>

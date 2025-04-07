@@ -4,6 +4,7 @@ import logging
 
 from backend.utils.file_handlers import load_document, allowed_file, save_file, get_file_info
 from backend.utils.embeddings import EmbeddingManager
+from backend.utils.summarizer import generate_document_summary
 from backend.config import UPLOAD_FOLDER, VECTOR_STORE_PATH
 
 # Configure logging
@@ -66,6 +67,13 @@ class DataIntakeAgent:
             if not content:
                 logger.error(f"Failed to extract content from file: {file_path}")
                 return False
+            
+            # Generate document summary
+            logger.info(f"Generating summary for: {os.path.basename(file_path)}")
+            summary = generate_document_summary(content)
+            if summary:
+                metadata['summary'] = summary
+                logger.info(f"Added summary to document metadata")
                 
             # Store the processed content with metadata
             doc_id = os.path.basename(file_path)
@@ -100,17 +108,19 @@ class DataIntakeAgent:
         """
         return self.documents.get(doc_id, {})
     
-    def get_all_documents(self) -> List[Dict[str, Any]]:
+    def get_all_documents(self) -> Dict[str, Dict[str, Any]]:
         """
-        Get all processed documents.
+        Retrieve all processed documents with their metadata.
         
         Returns:
-            List of dictionaries containing document content and metadata
+            Dict[str, Dict[str, Any]]: Dictionary with document IDs as keys and document data as values
         """
-        return [
-            {'id': doc_id, **doc_data}
-            for doc_id, doc_data in self.documents.items()
-        ]
+        try:
+            # Return a copy of the documents dictionary to avoid modification by the caller
+            return self.documents.copy()
+        except Exception as e:
+            logger.error(f"Error retrieving all documents: {str(e)}")
+            return {}
 
     def search_documents(
         self, 
@@ -127,7 +137,7 @@ class DataIntakeAgent:
         
         Args:
             query: The search query string
-            k: Maximum number of results to return 
+            k: Maximum number of results to return
             threshold: Minimum similarity score required
             rerank: Whether to apply re-ranking
             rerank_strategy: The re-ranking strategy to use

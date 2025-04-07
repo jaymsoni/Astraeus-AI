@@ -362,6 +362,49 @@ def delete_document_route(doc_id: str):
             'message': 'An error occurred while attempting to delete the document.'
         }), 500
 
+@app.route('/documents', methods=['GET'])
+def get_documents():
+    """
+    Retrieve a list of all processed documents with their metadata and summaries.
+    """
+    try:
+        # Get all documents from the data intake agent
+        documents = data_intake_agent.get_all_documents()
+        
+        # Format the response to include only necessary information
+        formatted_documents = []
+        for doc_id, doc_info in documents.items():
+            # Skip document chunks
+            if '::chunk::' in doc_id:
+                continue
+                
+            # Extract metadata
+            metadata = doc_info.get('metadata', {})
+            
+            # Create formatted document object
+            formatted_doc = {
+                'id': doc_id,
+                'filename': metadata.get('filename', doc_id),
+                'size': metadata.get('size', 0),
+                'type': metadata.get('type', 'unknown'),
+                'uploaded_at': metadata.get('uploaded_at', ''),
+                'summary': metadata.get('summary', 'No summary available')
+            }
+            
+            formatted_documents.append(formatted_doc)
+        
+        return jsonify({
+            'status': 'success',
+            'documents': formatted_documents
+        })
+        
+    except Exception as e:
+        logger.error(f"Error retrieving documents: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Failed to retrieve documents: {str(e)}"
+        }), 500
+
 @app.errorhandler(413)
 def too_large(e):
     return jsonify({
