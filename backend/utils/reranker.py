@@ -130,7 +130,7 @@ class SearchReranker:
             prompt = self._build_reranking_prompt(query, top_results)
             
             # Call Gemini model
-            model = genai.GenerativeModel("gemini-1.0-pro")
+            model = genai.GenerativeModel("gemini-1.5-flash")
             response = model.generate_content(prompt)
             
             # Parse the response to get the new ranking

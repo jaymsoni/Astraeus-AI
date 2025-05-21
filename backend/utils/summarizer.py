@@ -23,7 +23,7 @@ else:
     genai.configure(api_key=api_key)
 
 # Define the model to use for summarization - use the correct model name
-SUMMARY_MODEL = "gemini-1.5-pro"  # Updated model name
+SUMMARY_MODEL = "gemini-2.0-flash"  # Updated model name
 
 def generate_document_summary(content: str, max_length: int = 200) -> Optional[str]:
     """
@@ -74,8 +74,8 @@ Summary:"""
         
         # Try with a fallback model if the first attempt fails
         try:
-            logger.info("Trying with fallback model gemini-pro")
-            model = genai.GenerativeModel("gemini-pro")
+            logger.info("Trying with fallback model gemini-2.0-flash")
+            model = genai.GenerativeModel("gemini-2.0-flash")
             response = model.generate_content(prompt)
             summary = response.text.strip()
             logger.info(f"Successfully generated summary with fallback model ({len(summary.split())} words)")

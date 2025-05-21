@@ -27,7 +27,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
 # Model settings
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-pro")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 
 # File handling settings
 # Tuple of allowed file extensions for upload

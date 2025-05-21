@@ -8,6 +8,8 @@ import csv
 import json
 import xml.etree.ElementTree as ET
 import yaml
+from docx import Document
+import openpyxl
 
 from backend.config import ALLOWED_EXTENSIONS, UPLOAD_FOLDER
 
@@ -46,7 +48,7 @@ def save_file(file) -> Tuple[str, str]:
 def load_document(file_path: str) -> Optional[str]:
     """
     Load and read the contents of a document.
-    Supports multiple file formats including PDF, TXT, CSV, JSON, etc.
+    Supports multiple file formats including PDF, TXT, CSV, JSON, DOCX, XLSX etc.
     
     Args:
         file_path: Path to the file to read
@@ -90,7 +92,6 @@ def load_document(file_path: str) -> Optional[str]:
         elif file_extension == 'json':
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # Pretty-print JSON to make it more readable
                 return json.dumps(data, indent=2)
         
         # XML files
@@ -115,6 +116,48 @@ def load_document(file_path: str) -> Optional[str]:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
                 return yaml.dump(data, sort_keys=False, default_flow_style=False)
+
+        # Word documents
+        elif file_extension == 'docx':
+            doc = Document(file_path)
+            text = []
+            
+            # Extract text from paragraphs
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    text.append(paragraph.text)
+            
+            # Extract text from tables
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            row_text.append(cell.text.strip())
+                    if row_text:
+                        text.append(' | '.join(row_text))
+            
+            return '\n'.join(text)
+
+        # Excel files
+        elif file_extension in ['xlsx', 'xls']:
+            workbook = openpyxl.load_workbook(file_path, data_only=True)
+            text = []
+            
+            for sheet in workbook.sheetnames:
+                worksheet = workbook[sheet]
+                text.append(f"\nSheet: {sheet}")
+                
+                # Process each row
+                for row in worksheet.iter_rows():
+                    row_values = []
+                    for cell in row:
+                        if cell.value is not None:
+                            row_values.append(str(cell.value))
+                    if row_values:
+                        text.append(' | '.join(row_values))
+            
+            return '\n'.join(text)
         
         else:
             logger.warning(f"Unsupported file type: {file_extension}")

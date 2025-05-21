@@ -6,6 +6,8 @@ import json
 from werkzeug.utils import secure_filename
 import google.generativeai as genai
 import uuid
+import re
+from typing import Optional, Dict
 
 # Import configuration
 from backend.config import (
@@ -16,6 +18,7 @@ from backend.config import (
 
 # Import agents and utils
 from backend.agents.data_intake import DataIntakeAgent
+from backend.agents.learning import LearningAgent
 from backend.utils.file_handlers import allowed_file, save_file
 from backend.utils.conversation import ConversationManager
 
@@ -44,9 +47,21 @@ app.config['DEBUG'] = DEBUG
 
 # Initialize agents
 data_intake_agent = DataIntakeAgent()
+learning_agent = LearningAgent(data_intake_agent.embedding_manager)
 
 # Initialize conversation manager
 conversation_manager = ConversationManager()
+
+# Learning-related command patterns
+LEARNING_COMMANDS = {
+    'analyze': r'analyze (?:document|file) (.+)',
+    'study_guide': r'(?:create|generate) (?:a )?(?:study guide|learning guide) (?:for|from) (.+)',
+    'quick_guide': r'(?:create|generate) (?:a )?quick (?:study|learning) guide (?:for|from) (.+)',
+    'detailed_guide': r'(?:create|generate) (?:a )?detailed (?:study|learning) guide (?:for|from) (.+)'
+}
+
+# Document mention pattern
+DOCUMENT_MENTION_PATTERN = r'@([\w\s.-]+)'
 
 @app.route('/')
 def home():
@@ -137,11 +152,85 @@ def upload_file():
             'message': str(e)
         }), 500
 
+@app.route('/documents/suggestions', methods=['GET'])
+def get_document_suggestions():
+    """
+    Get list of available documents for mention suggestions.
+    """
+    try:
+        # Get all documents from the data intake agent
+        documents = data_intake_agent.get_all_documents()
+        
+        # Format suggestions
+        suggestions = []
+        for doc_id, doc_info in documents.items():
+            # Skip document chunks
+            if '#chunk-' in doc_id:
+                continue
+                
+            metadata = doc_info.get('metadata', {})
+            suggestions.append({
+                'id': doc_id,
+                'name': metadata.get('filename', doc_id),
+                'type': metadata.get('type', 'unknown'),
+                'summary': metadata.get('summary', '')
+            })
+        
+        return jsonify({
+            'status': 'success',
+            'suggestions': suggestions
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting document suggestions: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+def process_document_mentions(query: str) -> str:
+    """
+    Process document mentions in the query.
+    
+    Args:
+        query: The user's query string
+        
+    Returns:
+        Processed query with document mentions replaced with document IDs
+    """
+    try:
+        # Get all available documents
+        documents = data_intake_agent.get_all_documents()
+        
+        # Create a mapping of document names to IDs
+        doc_map = {}
+        for doc_id, doc_info in documents.items():
+            if '#chunk-' in doc_id:
+                continue
+            metadata = doc_info.get('metadata', {})
+            name = metadata.get('filename', doc_id)
+            doc_map[name.lower()] = doc_id
+        
+        # Replace mentions with document IDs
+        def replace_mention(match):
+            mention = match.group(1).strip().lower()
+            # Find the best matching document
+            for name, doc_id in doc_map.items():
+                if mention in name.lower() or name.lower() in mention:
+                    return f"@{doc_id}"
+            return match.group(0)  # Return original if no match found
+            
+        processed_query = re.sub(DOCUMENT_MENTION_PATTERN, replace_mention, query)
+        return processed_query
+        
+    except Exception as e:
+        logger.error(f"Error processing document mentions: {str(e)}")
+        return query
+
 @app.route('/query', methods=['POST'])
 def query_documents():
     """
-    Search through processed documents and generate an answer using an LLM.
-    Expects a JSON body with 'query', optional 'conversation_id', and optional parameters.
+    Handle document queries and learning-related requests.
     """
     data = request.get_json()
     if not data or 'query' not in data:
@@ -153,30 +242,39 @@ def query_documents():
     user_query = data['query']
     conversation_id = data.get('conversation_id', str(uuid.uuid4()))
     
-    # Extract search parameters with defaults
-    k = data.get('num_results', 3)
-    threshold = data.get('threshold', 0.6)
-    rerank = data.get('rerank', True)
-    rerank_strategy = data.get('rerank_strategy', 'hybrid')
-    
-    # New parameters for hybrid search
-    use_hybrid = data.get('use_hybrid', True)
-    hybrid_ratio = data.get('hybrid_ratio', 0.7)
-    
-    # Parameter to control whether to send source documents to frontend
-    show_sources = data.get('show_sources', False)
-    
     try:
+        # Process document mentions in the query
+        processed_query = process_document_mentions(user_query)
+        
+        # Check for learning-related commands
+        learning_response = handle_learning_commands(processed_query)
+        if learning_response:
+            return jsonify(learning_response)
+            
+        # If not a learning command, proceed with normal document search
+        # Extract search parameters with defaults
+        k = data.get('num_results', 3)
+        threshold = data.get('threshold', 0.6)
+        rerank = data.get('rerank', True)
+        rerank_strategy = data.get('rerank_strategy', 'hybrid')
+        
+        # New parameters for hybrid search
+        use_hybrid = data.get('use_hybrid', True)
+        hybrid_ratio = data.get('hybrid_ratio', 0.7)
+        
+        # Parameter to control whether to send source documents to frontend
+        show_sources = data.get('show_sources', False)
+        
         # Get conversation history
         conversation_history = conversation_manager.get_conversation_history(conversation_id)
         
         # Add user's message to history
-        conversation_manager.add_message(conversation_id, "user", user_query)
+        conversation_manager.add_message(conversation_id, "user", processed_query)
         
         # 1. Retrieve relevant documents with enhanced search
-        logger.info(f"Retrieving documents for query: '{user_query}' with threshold {threshold}")
+        logger.info(f"Retrieving documents for query: '{processed_query}' with threshold {threshold}")
         search_results = data_intake_agent.search_documents(
-            query=user_query,
+            query=processed_query,
             k=k,
             threshold=threshold,
             rerank=rerank,
@@ -282,7 +380,7 @@ IMPORTANT: When you cite or reference information from the documents, include a 
 
 {context if context else "Note: No relevant documents or conversation history found."}
 
-User's question: {user_query}
+User's question: {processed_query}
 
 Remember to use proper markdown formatting in your response:"""
         
@@ -330,8 +428,92 @@ Remember to use proper markdown formatting in your response:"""
         logger.error(f"Error in /query endpoint: {str(e)}")
         return jsonify({
             'status': 'error',
-            'message': 'An error occurred during the query process.'
+            'message': 'An error occurred during processing.'
         }), 500
+
+def handle_learning_commands(query: str) -> Optional[Dict]:
+    """
+    Handle learning-related commands in user queries.
+    
+    Args:
+        query: The user's query string
+        
+    Returns:
+        Dict containing the response if it's a learning command, None otherwise
+    """
+    try:
+        # Check for analyze command
+        analyze_match = re.match(LEARNING_COMMANDS['analyze'], query, re.IGNORECASE)
+        if analyze_match:
+            doc_id = analyze_match.group(1).strip()
+            result = learning_agent.analyze_document(doc_id)
+            return format_learning_response(result, 'analysis')
+            
+        # Check for study guide commands
+        guide_match = re.match(LEARNING_COMMANDS['study_guide'], query, re.IGNORECASE)
+        if guide_match:
+            doc_id = guide_match.group(1).strip()
+            result = learning_agent.generate_study_guide(doc_id, style='comprehensive')
+            return format_learning_response(result, 'study_guide')
+            
+        # Check for quick guide command
+        quick_match = re.match(LEARNING_COMMANDS['quick_guide'], query, re.IGNORECASE)
+        if quick_match:
+            doc_id = quick_match.group(1).strip()
+            result = learning_agent.generate_study_guide(doc_id, style='quick')
+            return format_learning_response(result, 'study_guide')
+            
+        # Check for detailed guide command
+        detailed_match = re.match(LEARNING_COMMANDS['detailed_guide'], query, re.IGNORECASE)
+        if detailed_match:
+            doc_id = detailed_match.group(1).strip()
+            result = learning_agent.generate_study_guide(doc_id, style='detailed')
+            return format_learning_response(result, 'study_guide')
+            
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error handling learning command: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f"Error processing learning request: {str(e)}"
+        }
+
+def format_learning_response(result: Dict, response_type: str) -> Dict:
+    """
+    Format the learning agent's response for the chat interface.
+    
+    Args:
+        result: The raw result from the learning agent
+        response_type: Type of response ('analysis' or 'study_guide')
+        
+    Returns:
+        Formatted response for the chat interface
+    """
+    if result['status'] != 'success':
+        return result
+        
+    if response_type == 'analysis':
+        analysis = result['analysis']
+        return {
+            'status': 'success',
+            'type': 'analysis',
+            'content': {
+                'overview': f"Analysis of document {result['doc_id']}:",
+                'key_concepts': analysis['key_concepts'],
+                'learning_objectives': analysis['learning_objectives'],
+                'difficulty': analysis['difficulty_level'],
+                'prerequisites': analysis['prerequisite_concepts']
+            }
+        }
+    else:  # study_guide
+        guide = result['content']
+        return {
+            'status': 'success',
+            'type': 'study_guide',
+            'style': result['style'],
+            'content': guide
+        }
 
 @app.route('/documents/<string:doc_id>', methods=['DELETE'])
 def delete_document_route(doc_id: str):
@@ -375,7 +557,7 @@ def get_documents():
         formatted_documents = []
         for doc_id, doc_info in documents.items():
             # Skip document chunks
-            if '::chunk::' in doc_id:
+            if '#chunk-' in doc_id:
                 continue
                 
             # Extract metadata

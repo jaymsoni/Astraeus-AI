@@ -2,9 +2,10 @@ from typing import List, Dict, Any, Optional
 import os
 import logging
 
-from backend.utils.file_handlers import load_document, allowed_file, save_file, get_file_info
+from backend.utils.file_handlers import allowed_file, save_file
 from backend.utils.embeddings import EmbeddingManager
 from backend.utils.summarizer import generate_document_summary
+from backend.utils.document import Document, DocumentProcessorFactory
 from backend.config import UPLOAD_FOLDER, VECTOR_STORE_PATH
 
 # Configure logging
@@ -22,6 +23,8 @@ class DataIntakeAgent:
             chunk_overlap: Overlap between document chunks
         """
         self.documents = {}  # Store processed documents
+        self.processor_factory = DocumentProcessorFactory()
+        
         # Initialize embedding manager with chunking options
         self.embedding_manager = EmbeddingManager(
             use_chunks=use_chunks,
@@ -35,6 +38,50 @@ class DataIntakeAgent:
             self.embedding_manager.load_embeddings(VECTOR_STORE_PATH)
         else:
             logger.info(f"No existing embeddings found at {VECTOR_STORE_PATH}")
+            
+        # Scan uploads folder for any unprocessed files
+        self._scan_uploads_folder()
+
+    def _scan_uploads_folder(self):
+        """
+        Scan the uploads folder and process any files that haven't been processed yet.
+        """
+        try:
+            if not os.path.exists(UPLOAD_FOLDER):
+                logger.warning(f"Uploads folder does not exist: {UPLOAD_FOLDER}")
+                return
+                
+            logger.info(f"Scanning uploads folder: {UPLOAD_FOLDER}")
+            for filename in os.listdir(UPLOAD_FOLDER):
+                file_path = os.path.join(UPLOAD_FOLDER, filename)
+                
+                # Skip if not a file
+                if not os.path.isfile(file_path):
+                    continue
+                    
+                # Check if file is already processed
+                if filename in self.embedding_manager.documents:
+                    logger.info(f"Loading existing document info: {filename}")
+                    # Load document info from embedding manager
+                    doc_info = self.embedding_manager.documents[filename]
+                    self.documents[filename] = doc_info
+                    continue
+                    
+                # Process the file if it has an allowed extension
+                if allowed_file(filename):
+                    logger.info(f"Processing new file: {filename}")
+                    self.process_file(
+                        file_path=file_path,
+                        metadata={
+                            'source': 'existing_file',
+                            'description': 'Pre-existing document in uploads folder'
+                        }
+                    )
+                else:
+                    logger.warning(f"Skipping file with unsupported extension: {filename}")
+                    
+        except Exception as e:
+            logger.error(f"Error scanning uploads folder: {str(e)}")
 
     def process_file(self, file_path: str, metadata: Dict[str, Any] = None) -> bool:
         """
@@ -52,39 +99,28 @@ class DataIntakeAgent:
                 logger.warning(f"File type not allowed: {file_path}")
                 return False
                 
-            # Get file info
-            file_info = get_file_info(file_path)
-            if metadata is None:
-                metadata = {}
-            
-            # Merge file info with provided metadata
-            metadata.update(file_info)
-            
-            # Load and process the document
+            # Process the document using the appropriate processor
             logger.info(f"Processing file: {file_path}")
-            content = load_document(file_path)
+            document = self.processor_factory.process_document(file_path, metadata)
             
-            if not content:
-                logger.error(f"Failed to extract content from file: {file_path}")
+            if not document:
+                logger.error(f"Failed to process document: {file_path}")
                 return False
             
             # Generate document summary
             logger.info(f"Generating summary for: {os.path.basename(file_path)}")
-            summary = generate_document_summary(content)
+            summary = generate_document_summary(document.content)
             if summary:
-                metadata['summary'] = summary
+                document.metadata['summary'] = summary
                 logger.info(f"Added summary to document metadata")
-                
-            # Store the processed content with metadata
+            
+            # Store the processed document
             doc_id = os.path.basename(file_path)
-            self.documents[doc_id] = {
-                'content': content,
-                'metadata': metadata or {}
-            }
+            self.documents[doc_id] = document.to_dict()
             
             # Add document to embedding manager
             logger.info(f"Generating embeddings for: {doc_id}")
-            self.embedding_manager.add_document(doc_id, content, metadata)
+            self.embedding_manager.add_document(doc_id, document.content, document.metadata)
             
             # Save embeddings to disk
             logger.info(f"Saving embeddings to {VECTOR_STORE_PATH}")
