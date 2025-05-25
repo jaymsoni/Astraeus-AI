@@ -8,22 +8,39 @@ import google.generativeai as genai
 import uuid
 import re
 from typing import Optional, Dict
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import aiofiles
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import requests
 
 # Import configuration
 from backend.config import (
     UPLOAD_FOLDER, MAX_CONTENT_LENGTH, DEBUG, 
-    GOOGLE_API_KEY, LLM_MODEL,
+    GOOGLE_API_KEY, LLM_MODEL as DEFAULT_LLM_MODEL, MAX_CONCURRENT_UPLOADS,
+    LOG_LEVEL, LOG_FORMAT, LOG_FILE,
     get_config_dict
 )
 
 # Import agents and utils
 from backend.agents.data_intake import DataIntakeAgent
 from backend.agents.learning import LearningAgent
-from backend.utils.file_handlers import allowed_file, save_file
+from backend.utils.file_handlers import (
+    allowed_file, save_file, validate_file, load_document,
+    get_file_info, cleanup_file, FileProcessingError
+)
 from backend.utils.conversation import ConversationManager
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format=LOG_FORMAT,
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Configure GenAI if API key is available
@@ -52,6 +69,25 @@ learning_agent = LearningAgent(data_intake_agent.embedding_manager)
 # Initialize conversation manager
 conversation_manager = ConversationManager()
 
+# Initialize thread pool for file processing
+file_processor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_UPLOADS)
+
+# Initialize file system watcher
+class FileChangeHandler(FileSystemEventHandler):
+    def on_modified(self, event):
+        if not event.is_directory:
+            logger.info(f"File modified: {event.src_path}")
+            # Handle file modification if needed
+
+    def on_deleted(self, event):
+        if not event.is_directory:
+            logger.info(f"File deleted: {event.src_path}")
+            # Handle file deletion if needed
+
+observer = Observer()
+observer.schedule(FileChangeHandler(), UPLOAD_FOLDER, recursive=False)
+observer.start()
+
 # Learning-related command patterns
 LEARNING_COMMANDS = {
     'analyze': r'analyze (?:document|file) (.+)',
@@ -62,6 +98,75 @@ LEARNING_COMMANDS = {
 
 # Document mention pattern
 DOCUMENT_MENTION_PATTERN = r'@([\w\s.-]+)'
+
+# Model configuration
+AVAILABLE_MODELS = {
+    'chat': [
+        {'id': 'gemini-2.0-flash', 'name': 'Gemini 2.0 Flash'},
+        {'id': 'gemini-1.5-flash', 'name': 'Gemini 1.5 Flash'},
+        {'id': 'gemini-1.0-pro', 'name': 'Gemini 1.0 Pro'},
+        {'id': 'ollama/llama2', 'name': 'Llama 2 (Ollama)'},
+        {'id': 'ollama/mistral', 'name': 'Mistral (Ollama)'},
+        {'id': 'ollama/codellama', 'name': 'CodeLlama (Ollama)'},
+        {'id': 'ollama/neural-chat', 'name': 'Neural Chat (Ollama)'}
+    ],
+    'embedding': [
+        {'id': 'models/embedding-001', 'name': 'Embedding 001'},
+        {'id': 'models/embedding-002', 'name': 'Embedding 002'},
+        {'id': 'ollama/nomic-embed-text', 'name': 'Nomic Embed Text (Ollama)'}
+    ]
+}
+
+# Add Ollama client configuration
+OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+
+# Global variable to store selected models
+# Initialize with default values from config
+_selected_models = {
+    'chat': DEFAULT_LLM_MODEL,
+    'embedding': os.getenv("EMBEDDING_MODEL", "models/embedding-001") # Assuming EMBEDDING_MODEL env var or default
+}
+
+def get_llm_response(prompt: str, model_id: str) -> str:
+    """
+    Get response from either Google Gemini or Ollama model.
+    
+    Args:
+        prompt: The prompt to send to the model
+        model_id: The ID of the model to use
+        
+    Returns:
+        The model's response text
+    """
+    logger.info(f"Attempting to get LLM response using model_id: {model_id}")
+    try:
+        if model_id.startswith('ollama/'):
+            # Use Ollama API
+            model_name = model_id.replace('ollama/', '')
+            logger.info(f"Using Ollama model: {model_name}")
+            response = requests.post(
+                f'{OLLAMA_BASE_URL}/api/generate',
+                json={
+                    'model': model_name,
+                    'prompt': prompt,
+                    'stream': False
+                }
+            )
+            response.raise_for_status()
+            logger.info("Successfully received response from Ollama.")
+            return response.json()['response']
+        else:
+            # Use Google Gemini API
+            logger.info(f"Using Google Gemini model: {model_id}")
+            if not GOOGLE_API_KEY:
+                raise ValueError("GOOGLE_API_KEY not configured")
+            model = genai.GenerativeModel(model_id)
+            response = model.generate_content(prompt)
+            logger.info("Successfully received response from Google Gemini.")
+            return response.text
+    except Exception as e:
+        logger.error(f"Error getting LLM response for model {model_id}: {str(e)}")
+        raise
 
 @app.route('/')
 def home():
@@ -86,7 +191,7 @@ def get_config():
     }), 403
 
 @app.route('/upload', methods=['POST'])
-def upload_file():
+async def upload_file():
     """
     Handle file uploads and process them using the Data Intake Agent.
     Expects a file in the request and optional metadata as JSON.
@@ -104,52 +209,76 @@ def upload_file():
             'message': 'No file selected'
         }), 400
 
-    if not allowed_file(file.filename):
-        return jsonify({
-            'status': 'error',
-            'message': 'File type not allowed'
-        }), 400
-
     try:
-        # Ensure upload directory exists
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        # Validate file
+        is_valid, error_message = validate_file(file)
+        if not is_valid:
+            return jsonify({
+                'status': 'error',
+                'message': error_message
+            }), 400
 
         # Get metadata if provided
-        metadata = json.loads(request.form.get('metadata', '{}'))
+        try:
+            metadata = json.loads(request.form.get('metadata', '{}'))
+        except json.JSONDecodeError:
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid metadata JSON'
+            }), 400
 
         # Save the file and get the filename and path
         filename, file_path = save_file(file)
 
-        # Process the file using the Data Intake Agent
-        success = data_intake_agent.process_file(
-            file_path=file_path,
-            metadata=metadata
-        )
+        # Get file info for metadata
+        file_info = get_file_info(file_path)
+        metadata.update(file_info)
 
-        if not success:
-             # Clean up the saved file if processing failed
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.warning(f"Removed file due to processing failure: {file_path}")
+        # Process the file using the Data Intake Agent
+        try:
+            success = await asyncio.get_event_loop().run_in_executor(
+                file_processor,
+                data_intake_agent.process_file,
+                file_path,
+                metadata
+            )
+
+            if not success:
+                # Clean up the saved file if processing failed
+                cleanup_file(file_path)
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Failed to process file'
+                }), 500
+
+            return jsonify({
+                'status': 'success',
+                'message': 'File processed successfully',
+                'data': {
+                    'filename': filename,
+                    'metadata': metadata
+                }
+            })
+
+        except Exception as e:
+            logger.error(f"Error processing file: {str(e)}")
+            cleanup_file(file_path)
             return jsonify({
                 'status': 'error',
-                'message': 'Failed to process file'
+                'message': f'Error processing file: {str(e)}'
             }), 500
 
-        return jsonify({
-            'status': 'success',
-            'message': 'File processed successfully',
-            'data': {'filename': filename}
-        })
-
-    except Exception as e:
-        logger.error(f"Error in upload endpoint: {str(e)}")
-        # Clean up the saved file in case of any exception during processing
-        if 'file_path' in locals() and os.path.exists(file_path):
-            os.remove(file_path)
+    except FileProcessingError as e:
+        logger.error(f"File processing error: {str(e)}")
         return jsonify({
             'status': 'error',
             'message': str(e)
+        }), 400
+    except Exception as e:
+        logger.error(f"Unexpected error in upload endpoint: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': 'An unexpected error occurred'
         }), 500
 
 @app.route('/documents/suggestions', methods=['GET'])
@@ -173,7 +302,8 @@ def get_document_suggestions():
                 'id': doc_id,
                 'name': metadata.get('filename', doc_id),
                 'type': metadata.get('type', 'unknown'),
-                'summary': metadata.get('summary', '')
+                'summary': metadata.get('summary', ''),
+                'metadata': metadata
             })
         
         return jsonify({
@@ -384,23 +514,20 @@ User's question: {processed_query}
 
 Remember to use proper markdown formatting in your response:"""
         
-        logger.info(f"Generating response using model: {LLM_MODEL}")
+        # Use the globally selected chat model
+        current_llm_model = _selected_models.get('chat', DEFAULT_LLM_MODEL)
+        logger.info(f"Generating response using model: {current_llm_model}")
         
-        if not GOOGLE_API_KEY:
-             return jsonify({'status': 'error', 'message': 'LLM generation is disabled. GOOGLE_API_KEY not configured.'}), 500
-
         try:
-            # Use the specified LLM model
-            model = genai.GenerativeModel(LLM_MODEL)
-            response = model.generate_content(prompt)
-            generated_answer = response.text
+            # Get response from the appropriate model
+            generated_answer = get_llm_response(prompt, current_llm_model)
             logger.info("LLM response received.")
             
             # Add assistant's response to conversation history
             conversation_manager.add_message(conversation_id, "assistant", generated_answer)
 
         except Exception as llm_error:
-            logger.error(f"Error calling Gemini API: {llm_error}")
+            logger.error(f"Error calling LLM API: {llm_error}")
             return jsonify({'status': 'error', 'message': 'Failed to generate answer from LLM.'}), 500
             
         # 4. Return results, conditionally including search results
@@ -585,6 +712,61 @@ def get_documents():
         return jsonify({
             'status': 'error',
             'message': f"Failed to retrieve documents: {str(e)}"
+        }), 500
+
+@app.route('/api/models', methods=['GET'])
+def get_available_models():
+    """Get list of available models."""
+    return jsonify({
+        'status': 'success',
+        'models': AVAILABLE_MODELS
+    })
+
+@app.route('/api/models', methods=['POST'])
+def update_model():
+    """
+    Update the selected model.
+    """
+    data = request.get_json()
+    if not data or 'model_type' not in data or 'model_id' not in data:
+        return jsonify({
+            'status': 'error',
+            'message': 'Missing required fields'
+        }), 400
+        
+    model_type = data['model_type']
+    model_id = data['model_id']
+    
+    # Validate model type and ID
+    if model_type not in AVAILABLE_MODELS:
+        return jsonify({
+            'status': 'error',
+            'message': f'Invalid model type: {model_type}'
+        }), 400
+        
+    if not any(m['id'] == model_id for m in AVAILABLE_MODELS[model_type]):
+        return jsonify({
+            'status': 'error',
+            'message': f'Invalid model ID: {model_id}'
+        }), 400
+    
+    try:
+        # Update the global selected models
+        _selected_models[model_type] = model_id
+            
+        logger.info(f"Updated selected {model_type} model to {model_id}")
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Successfully updated {model_type} model to {model_id}',
+            'selected_models': _selected_models # Optional: send back current selection
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating model: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Failed to update model: {str(e)}'
         }), 500
 
 @app.errorhandler(413)

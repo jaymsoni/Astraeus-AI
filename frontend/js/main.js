@@ -58,6 +58,12 @@ window.lastResponse = null;
 window.lastResponseQuery = null;
 window.lastResponseSourceCount = 0;
 
+// State for selected models
+let selectedModels = {
+    chat: 'gemini-2.0-flash', // Default chat model
+    embedding: 'models/embedding-001' // Default embedding model
+};
+
 // Event Listeners
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', handleDragOver);
@@ -181,18 +187,19 @@ async function handleQuery() {
     
     try {
         // Show user's message
-    addMessage('user', query);
-    
+        addMessage('user', query);
+        
         // Clear input
         queryInput.value = '';
         
         // Show typing indicator while we wait for a response
-    showTypingIndicator();
-    
-        // Prepare request data
+        showTypingIndicator();
+        
+        // Prepare request data including the selected chat model
         const requestData = {
             query: query,
-            conversation_id: currentConversationId
+            conversation_id: currentConversationId,
+            model_id: selectedModels.chat // Include the selected chat model ID
         };
         
         const response = await fetch(API_ENDPOINTS.query, {
@@ -323,49 +330,20 @@ function addDocumentToList(filename) {
     console.log("Document added with delete button:", filename);
 }
 
-// Configure marked.js options
-marked.setOptions({
-    highlight: function(code, lang) {
-        if (lang && hljs.getLanguage(lang)) {
-            return hljs.highlight(code, { language: lang }).value;
-        }
-        return hljs.highlightAuto(code).value;
-    },
+// Configure markdown-it options
+const md = window.markdownit({
     breaks: true,
-    gfm: true,
-    headerIds: true,
-    mangle: false,
-    pedantic: false,
-    smartLists: true,
-    smartypants: true
+    linkify: true,
+    typographer: true,
+    highlight: function (str, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+            try {
+                return hljs.highlight(lang, str).value;
+            } catch (__) {}
+        }
+        return ''; // use external default escaping
+    }
 });
-
-// Custom renderer for better markdown handling
-const renderer = new marked.Renderer();
-
-// Enhance heading rendering
-renderer.heading = function(text, level) {
-    const escapedText = text.toLowerCase().replace(/[^\w]+/g, '-');
-    return `
-        <h${level} id="${escapedText}" class="markdown-heading">
-            ${text}
-        </h${level}>
-    `;
-};
-
-// Enhance blockquote rendering
-renderer.blockquote = function(quote) {
-    return `<blockquote class="markdown-quote">${quote}</blockquote>`;
-};
-
-// Enhance list rendering
-renderer.list = function(body, ordered) {
-    const type = ordered ? 'ol' : 'ul';
-    return `<${type} class="markdown-list">${body}</${type}>`;
-};
-
-// Update marked configuration with custom renderer
-marked.use({ renderer });
 
 function addMessage(role, content) {
     const messageDiv = document.createElement('div');
@@ -376,19 +354,6 @@ function addMessage(role, content) {
     
     // Handle markdown formatting for assistant messages
     if (role === 'assistant') {
-        const md = window.markdownit({
-            breaks: true,
-            linkify: true,
-            typographer: true,
-            highlight: function (str, lang) {
-                if (lang && hljs.getLanguage(lang)) {
-                    try {
-                        return hljs.highlight(lang, str).value;
-                    } catch (__) {}
-                }
-                return ''; // use external default escaping
-            }
-        });
         contentDiv.innerHTML = md.render(content);
     } else {
         // Simple text for user messages
